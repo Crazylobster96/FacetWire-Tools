@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facetwire-tools"
+version = "0.1.0.dev6"
+description = "Independent FacetWire document tools"
+requires-python = ">=3.11"
+dependencies = ["jsonschema==4.25.1"]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+
+[project.scripts]
+facetwire-tools = "facetwire_tools.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+facetwire_tools = ["examples/*.json"]
