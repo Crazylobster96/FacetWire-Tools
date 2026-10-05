@@ -253,7 +253,8 @@ class CLIHost:
                                     max_input_bytes=c["max_input_bytes"], max_output_bytes=c["max_output_bytes"] - 512)
         save_tools = ManagedSaveTools(saves, max_input_bytes=c["max_input_bytes"])
         self.routes, self.definitions = {}, []
-        groups = [(document_tools, draft_definitions(package=package)),
+        groups = [(document_tools, draft_definitions(package=package,
+                    extension_fields=package and journal.editor.extensions is not None)),
                   (source_tools, source_definitions(package=package)),
                   (save_tools, save_definitions(package=package))]
         if package:

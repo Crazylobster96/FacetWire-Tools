@@ -10,7 +10,7 @@ from .journal import DraftJournal, identity
 from .package_editor import PackageEditor
 
 
-def definitions(*, package=False):
+def definitions(*, package=False, extension_fields=False):
     """Fresh generic JSON Schema descriptions, not provider-specific registration or permission."""
     string_id = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", "maxLength": 128}
     revision = {"type": "integer", "minimum": 1, "maximum": 129}
@@ -32,7 +32,10 @@ def definitions(*, package=False):
                             "properties": {"descriptor_path": {"type": "string", "minLength": 1, "maxLength": 1024},
                                            "expected_descriptor_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                                            "target_id": {"type": "string", "minLength": 1, "maxLength": 256},
-                                           "field": {"enum": ["title", "size", "z", "rotation", "bounds", "text",
+                                           "field": {"oneOf": [{"enum": ["title", "size", "z", "rotation", "bounds", "text",
+                                                              "color", "selectable", "opacity"]},
+                                                              {"type": "string", "pattern": "^extension\\.[a-z][A-Za-z0-9]{0,63}$"}]}
+                                                    if extension_fields else {"enum": ["title", "size", "z", "rotation", "bounds", "text",
                                                               "color", "selectable", "opacity"]},
                                            "expected": {}, "value": {}, "scope": scope}}
         patch_item = {"oneOf": [resource_patch, descriptor_patch]}
@@ -79,7 +82,8 @@ class DocumentTools:
         journal._access(actor, "attach")
         self.session_id = secrets.token_urlsafe(24)
         self.schemas = {item["name"]: Draft202012Validator(item["parameters"])
-                        for item in definitions(package=self.prefix == "facetwire.package.")}
+                        for item in definitions(package=self.prefix == "facetwire.package.",
+                                                extension_fields=type(journal.editor) is PackageEditor and journal.editor.extensions is not None)}
 
     def call(self, name, arguments):
         if type(name) is not str or name not in self.schemas:

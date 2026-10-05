@@ -9,6 +9,7 @@ import binascii
 import hashlib
 import json
 from pathlib import PurePosixPath
+import re
 
 from .descriptor import DescriptorEditor, DocumentError, _constant, _pairs, bounded_int, encode
 from .package_workspace import PackageSnapshot, _relative
@@ -93,6 +94,8 @@ class PackageEditor:
             if kind == "zone" and obj["content"]["type"] == "text":
                 paths += (("content", "text"), ("content", "style", "color"),
                           ("content", "selectable"), ("content", "opacity"))
+            elif kind == "zone" and self.extensions is not None and obj["content"]["type"] in self.extensions.validators:
+                paths += tuple(("content", key) for key in obj["content"] if key != "type")
             for path in paths:
                 _drop(obj, path)
         return encode(value)
@@ -192,8 +195,26 @@ class PackageEditor:
                 if hashlib.sha256(before).hexdigest() != operation["expected_descriptor_digest"]:
                     raise DocumentError("descriptor patch precondition conflict")
                 document = self._descriptor(before)
-                self.descriptor_editor._apply_ops(document, (dict(target_id=operation["target_id"], field=operation["field"],
-                                                           expected=operation["expected"], value=operation["value"]),))
+                field=operation["field"]
+                if type(field) is str and field.startswith("extension."):
+                    key=field.removeprefix("extension.")
+                    if (self.extensions is None or re.fullmatch(r'[a-z][A-Za-z0-9]{0,63}',key) is None
+                            or key=='type'):
+                        raise DocumentError("installed extension field required")
+                    objects={obj["id"]:(obj,kind) for obj,kind in self.descriptor_editor._objects(document)}
+                    target=objects.get(operation["target_id"])
+                    if (target is None or target[1]!="zone" or
+                            target[0]["content"]["type"] not in self.extensions.validators or
+                            key not in target[0]["content"]):
+                        raise DocumentError("exact installed extension target and field required")
+                    content=target[0]["content"]
+                    if encode(content[key])!=encode(operation["expected"]):
+                        raise DocumentError("extension field precondition conflict")
+                    content[key]=operation["value"]
+                    self.extensions.validate(content)
+                else:
+                    self.descriptor_editor._apply_ops(document, (dict(target_id=operation["target_id"], field=field,
+                                                               expected=operation["expected"], value=operation["value"]),))
                 updated = encode(document)
                 item["base64"] = base64.b64encode(updated).decode("ascii")
             else:

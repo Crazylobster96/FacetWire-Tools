@@ -118,15 +118,31 @@ class PackageCLITests(unittest.TestCase):
         source=self.call(host,'package_source.snapshot',expected_source_revision=1)
         target=self.call(host,'package.targets',expected_revision=1,target_id='picture',max_matches=2)
         self.assertEqual('unique',target['status'])
-        self.call(host,'package.apply_patch',operation_id='custom-edit',expected_revision=1,expected_head=1,
+        custom=dict(descriptor_path='documents/child.agscene/child.agscene.dis.json',
+            expected_descriptor_digest=hashlib.sha256(encode(self.package.child)).hexdigest(),
+            target_id='picture',field='extension.body',expected='Synthetic custom zone',value='Revised custom zone',
+            scope='definition_all_instances')
+        preview=self.call(host,'package.preview_patch',expected_revision=1,expected_head=1,
+            operations=[custom],include_candidate=True)
+        self.assertFalse(preview['persisted'])
+        self.call(host,'package.apply_patch',operation_id='extension-edit',expected_revision=1,expected_head=1,
+            operations=[custom])
+        self.call(host,'package.undo',operation_id='extension-undo',expected_revision=2,expected_head=2,count=1)
+        self.call(host,'package.redo',operation_id='extension-redo',expected_revision=3,expected_head=1,count=1)
+        self.call(host,'package.apply_patch',operation_id='custom-edit',expected_revision=4,expected_head=2,
                   operations=[dict(descriptor_path='example.agscene.dis.json',
                       expected_descriptor_digest=hashlib.sha256(encode(self.package.parent)).hexdigest(),
                       target_id='root',field='title',expected='Synthetic CLI',value='Custom title',
                       scope='definition_all_instances')])
-        self.call(host,'package.save',operation_id='custom-save',expected_revision=2,expected_head=2,
+        current=self.call(host,'package.inspect',expected_revision=5)
+        self.call(host,'package.save',operation_id='custom-save',expected_revision=5,expected_head=current['history_head'],
                   expected_source_revision=1)
         host=CLIHost(self.fixture.path)
         saved=self.call(host,'package_source.snapshot',expected_source_revision=2)
+        child=next(item for item in json.loads(saved['descriptor_utf8'])['files'] if
+            item['path']=='documents/child.agscene/child.agscene.dis.json')
+        self.assertEqual('Revised custom zone',json.loads(base64.b64decode(child['base64']))
+                         ['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']['body'])
         workset=host._open(False)[0].editor.inspect(saved['descriptor_utf8'].encode('utf-8'))['workset_digest']
         exported=self.call(host,'package.export',operation_id='custom-export',expected_source_revision=2,
                            expected_source_digest=saved['digest'],expected_workset_digest=workset)

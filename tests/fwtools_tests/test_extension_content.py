@@ -69,6 +69,23 @@ class ExtensionContentTests(unittest.TestCase):
         with self.assertRaises(DocumentError):PackageEditor(unbound,fixture.editor,max_bytes=65536,max_resource_bytes=1024)
         editor=PackageEditor(snapshot,fixture.editor,max_bytes=65536,max_resource_bytes=1024,extensions=profiles)
         self.assertEqual('facetwire.package-draft.v1',editor.inspect(editor.initial())['profile'])
+        child_path='documents/child.agscene/child.agscene.dis.json'
+        patch=dict(descriptor_path=child_path,expected_descriptor_digest=hashlib.sha256(dict(snapshot.files)[child_path]).hexdigest(),
+            target_id='picture',field='extension.ink',expected='#112233ff',value='#aabbccff',scope='definition_all_instances')
+        edited=editor.prepare_patch(editor.initial(),(patch,))
+        changed_child=next(item for item in json.loads(edited)['files'] if item['path']==child_path)
+        self.assertEqual('#aabbccff',json.loads(base64.b64decode(changed_child['base64']))
+                         ['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']['ink'])
+        self.assertEqual('#112233ff',fixture.child['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']['ink'])
+        with self.assertRaises(DocumentError):editor.prepare_patch(edited,(patch,))
+        for field,expected,value in (('extension.type','fact-card','other'),('extension.missing','x','y'),
+                                     ('extension.','x','y'),('extension.ink','wrong','#aabbccff'),
+                                     ('extension.ink','#112233ff','bad')):
+            with self.subTest(field=field,value=value),self.assertRaises(DocumentError):
+                editor.prepare_patch(editor.initial(),(dict(patch,field=field,expected=expected,value=value),))
+        with self.assertRaises(DocumentError):editor.prepare_patch(editor.initial(),(dict(patch,target_id='root'),))
+        with self.assertRaises(DocumentError):editor.prepare_patch(editor.initial(),(dict(patch,field='extension.body',
+            expected='synthetic',value=42),))
         new=editor.prepare_patch(editor.initial(),(dict(descriptor_path='example.agscene.dis.json',
             expected_descriptor_digest=hashlib.sha256(dict(snapshot.files)['example.agscene.dis.json']).hexdigest(),
             target_id='root',field='title',expected='Synthetic CLI',value='New synthetic',scope='definition_all_instances'),))
