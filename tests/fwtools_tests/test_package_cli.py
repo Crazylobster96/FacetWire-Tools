@@ -11,6 +11,7 @@ from facetwire_tools.cli_host import CLIHost, settings
 from facetwire_tools.descriptor import DocumentError, encode
 from fwtools_tests.test_cli_host import CLIHostTests
 from fwtools_tests.test_package_workspace import PackageWorkspaceTests
+from fwtools_tests.test_extension_content import schema
 
 
 class PackageCLITests(unittest.TestCase):
@@ -97,3 +98,39 @@ class PackageCLITests(unittest.TestCase):
         self.fixture.config["profile"]="managed-local-tools-v1"
         self.fixture.rewrite()
         with self.assertRaises(DocumentError):CLIHost(self.fixture.path).initialize_package()
+
+    def test_v2_installed_extension_is_pinned_across_edit_save_and_export(self):
+        self.package.child['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']={
+            'type':'fact-card','body':'Synthetic custom zone','ink':'#112233ff'}
+        self.package.save()
+        with self.assertRaises(DocumentError):CLIHost(self.fixture.path).initialize_package()
+        profile_file=self.fixture.root/'fact-card.schema.json'
+        profile_file.write_bytes(schema())
+        entry=dict(type='fact-card',schema_path=str(profile_file),sha256=hashlib.sha256(schema()).hexdigest())
+        for invalid in ([],[dict(entry,extra=True)]):
+            self.fixture.rewrite(profile='managed-package-tools-v2',extension_schemas=invalid)
+            with self.assertRaises(DocumentError):settings(self.fixture.path)
+        self.fixture.rewrite(profile='managed-package-tools-v2',extension_schemas=[entry],
+                             database_path=str(self.fixture.root/'extension.db'))
+        host=CLIHost(self.fixture.path)
+        self.assertEqual('initialized_package',host.initialize_package()['status'])
+        self.assertEqual(18,len(host.describe()['tools']))
+        source=self.call(host,'package_source.snapshot',expected_source_revision=1)
+        target=self.call(host,'package.targets',expected_revision=1,target_id='picture',max_matches=2)
+        self.assertEqual('unique',target['status'])
+        self.call(host,'package.apply_patch',operation_id='custom-edit',expected_revision=1,expected_head=1,
+                  operations=[dict(descriptor_path='example.agscene.dis.json',
+                      expected_descriptor_digest=hashlib.sha256(encode(self.package.parent)).hexdigest(),
+                      target_id='root',field='title',expected='Synthetic CLI',value='Custom title',
+                      scope='definition_all_instances')])
+        self.call(host,'package.save',operation_id='custom-save',expected_revision=2,expected_head=2,
+                  expected_source_revision=1)
+        host=CLIHost(self.fixture.path)
+        saved=self.call(host,'package_source.snapshot',expected_source_revision=2)
+        workset=host._open(False)[0].editor.inspect(saved['descriptor_utf8'].encode('utf-8'))['workset_digest']
+        exported=self.call(host,'package.export',operation_id='custom-export',expected_source_revision=2,
+                           expected_source_digest=saved['digest'],expected_workset_digest=workset)
+        self.assertTrue(exported['recorded'])
+        profile_file.write_bytes(b'changed')
+        with self.assertRaises(DocumentError):CLIHost(self.fixture.path).describe()
+        self.assertNotEqual(source['digest'],saved['digest'])

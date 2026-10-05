@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import unicodedata
 
 from .descriptor import DescriptorEditor, DocumentError, _constant, _pairs, bounded_int, encode
+from .extension_content import ExtensionContent
 
 
 def _relative(value):
@@ -28,6 +29,7 @@ class PackageSnapshot:
     root_name: str
     files: tuple[tuple[str, bytes], ...]
     descriptor_paths: tuple[str, ...]
+    extension_digest: str = ""
 
     @property
     def digest(self):
@@ -40,12 +42,15 @@ class PackageSnapshot:
 
 
 class PackageWorkspace:
-    def __init__(self, root, editor, *, max_files, max_total_bytes, max_depth, max_file_bytes):
+    def __init__(self, root, editor, *, max_files, max_total_bytes, max_depth, max_file_bytes, extensions=None):
         root = Path(root)
         if (type(editor) is not DescriptorEditor or not root.is_absolute() or root.is_symlink()
                 or not root.is_dir() or root.resolve() != root or not root.name.endswith(".agscene")):
             raise DocumentError("trusted resolved FacetWire package directory required")
         self.root, self.editor = root, editor
+        if extensions is not None and type(extensions) is not ExtensionContent:
+            raise DocumentError("exact installed extension profiles required")
+        self.extensions = extensions
         self.limits = (bounded_int(max_files, 1, 4096), bounded_int(max_total_bytes, 1, 67108864),
                        bounded_int(max_depth, 0, 16), bounded_int(max_file_bytes, 1, 67108864))
 
@@ -145,7 +150,9 @@ class PackageWorkspace:
                                 if caption is None or not caption["mediaType"].startswith("text/"):
                                     raise DocumentError("timed text resource unavailable or incompatible")
                         elif content["type"] != "placeholder":
-                            raise DocumentError("unsupported package content requires a negotiated profile")
+                            if self.extensions is None:
+                                raise DocumentError("unsupported package content requires a negotiated profile")
+                            self.extensions.validate(content)
             active.remove(path)
             seen.add(path)
             descriptors.append(path)
@@ -154,7 +161,8 @@ class PackageWorkspace:
         for path, raw in files.items():
             if self._read(path) != raw:
                 raise DocumentError("package workset changed during inventory")
-        return PackageSnapshot(self.root.name, tuple(sorted(files.items())), tuple(sorted(descriptors)))
+        return PackageSnapshot(self.root.name, tuple(sorted(files.items())), tuple(sorted(descriptors)),
+                               "" if self.extensions is None else self.extensions.digest)
 
     def targets(self, target_id, *, max_matches):
         """Locate every displayed instance of one object, never guess an edit scope."""

@@ -16,6 +16,7 @@ from .package_workspace import PackageWorkspace
 from .package_editor import PackageEditor
 from .package_export import PackageExport
 from .package_export_tools import PackageExportTools, definitions as export_definitions
+from .extension_content import ExtensionContent
 
 
 DRAFT_ACTIONS = frozenset(("open", "attach", "inspect", "validate", "snapshot", "targets", "preview_patch", "patch", "undo", "redo",
@@ -23,6 +24,7 @@ DRAFT_ACTIONS = frozenset(("open", "attach", "inspect", "validate", "snapshot", 
 STORE_ACTIONS = frozenset(("open", "read", "read_candidate", "candidate", "managed_local"))
 POLICY_FIELDS = frozenset(("enabled", "allow_initialize", "draft_actions", "store_actions", "discard_approvals"))
 PACKAGE_POLICY_FIELDS = frozenset(("allow_export",))
+PACKAGE_PROFILES = frozenset(("managed-package-tools-v1", "managed-package-tools-v2"))
 
 
 def parse(raw, maximum):
@@ -41,16 +43,18 @@ def settings(path):
     keys = {"profile", "database_path", "schema_root", "actor", "draft_scope", "store_scope", "source_key",
             "editor_limits", "draft_limits", "store_limits", "save_limits", "max_input_bytes", "max_output_bytes"} | POLICY_FIELDS
     if type(value) is not dict or value.get("profile") not in (
-            "synthetic-local-tools-v1", "managed-local-tools-v1", "managed-package-tools-v1"):
+            "synthetic-local-tools-v1", "managed-local-tools-v1", *PACKAGE_PROFILES):
         raise DocumentError("explicit supported CLI host profile required")
-    package = value["profile"] == "managed-package-tools-v1"
-    if value["profile"] in ("managed-local-tools-v1", "managed-package-tools-v1"):
+    package = value["profile"] in PACKAGE_PROFILES
+    if value["profile"] in ("managed-local-tools-v1", *PACKAGE_PROFILES):
         keys.add("document_id")
     if package:
         keys.update({"package_path", "export_root", "package_limits", "max_resource_bytes", "max_generations", "allow_export"})
+    if value["profile"] == "managed-package-tools-v2":
+        keys.add("extension_schemas")
     if set(value) != keys:
         raise DocumentError("exact CLI host configuration required")
-    if value["profile"] in ("managed-local-tools-v1", "managed-package-tools-v1"):
+    if value["profile"] in ("managed-local-tools-v1", *PACKAGE_PROFILES):
         identity(value["document_id"])
     for field in ("actor", "draft_scope", "store_scope", "source_key"):
         identity(value[field])
@@ -77,6 +81,13 @@ def settings(path):
         bounded_int(value["max_generations"],1,128)
         if type(value["allow_export"]) is not bool:
             raise DocumentError("explicit package export authorization required")
+    if value["profile"] == "managed-package-tools-v2":
+        extensions = value["extension_schemas"]
+        if type(extensions) is not list or not 1 <= len(extensions) <= 16:
+            raise DocumentError("explicit bounded extension schemas required")
+        for item in extensions:
+            if type(item) is not dict or set(item) != {"type", "schema_path", "sha256"}:
+                raise DocumentError("exact extension schema pin required")
     bounded_int(value["max_input_bytes"], 1, 65_536)
     bounded_int(value["max_output_bytes"], 8192, 4_194_304)
     for field in ("enabled", "allow_initialize"):
@@ -148,16 +159,18 @@ class CLIHost:
         c = self.config
         descriptor = DescriptorEditor(Path(c["schema_root"]), max_bytes=c["editor_limits"][0],
                                       max_nodes=c["editor_limits"][1], max_depth=c["editor_limits"][2])
-        if c["profile"] == "managed-package-tools-v1":
+        if c["profile"] in PACKAGE_PROFILES:
+            extensions = ExtensionContent.load(c["extension_schemas"]) if c["profile"] == "managed-package-tools-v2" else None
             workspace = PackageWorkspace(Path(c["package_path"]), descriptor,
                                          max_files=c["package_limits"][0], max_total_bytes=c["package_limits"][1],
-                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3])
+                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3],
+                                         extensions=extensions)
             snapshot = workspace.read()
             root = parse(dict(snapshot.files)[snapshot.root_name + ".dis.json"], c["editor_limits"][0])
             if root["id"] != c["document_id"]:
                 raise DocumentError("trusted package descriptor ID mismatch")
             editor = PackageEditor(snapshot, descriptor, max_bytes=c["editor_limits"][0],
-                                   max_resource_bytes=c["max_resource_bytes"])
+                                   max_resource_bytes=c["max_resource_bytes"], extensions=extensions)
             seed = editor.initial() if create else None
         else:
             editor = descriptor
@@ -173,7 +186,7 @@ class CLIHost:
         if create:
             store.save(seed, actor=c["actor"], source_key=c["source_key"], expected_revision=0,
                         operation_id=("synthetic-initial" if c["profile"] == "synthetic-local-tools-v1" else
-                                      "package-initial" if c["profile"] == "managed-package-tools-v1" else "managed-initial"),
+                                      "package-initial" if c["profile"] in PACKAGE_PROFILES else "managed-initial"),
                         mode="managed_local")
         saves = ManagedSaves(journal, store, actor=c["actor"], source_key=c["source_key"],
                              max_saves=c["save_limits"][0], max_total_bytes=c["save_limits"][1], create=create)
@@ -203,7 +216,7 @@ class CLIHost:
 
     def initialize_package(self):
         self._initialization_allowed()
-        if self.config["profile"] != "managed-package-tools-v1":
+        if self.config["profile"] not in PACKAGE_PROFILES:
             raise DocumentError("package initialization requires its exact profile")
         return self._initialize()
 
@@ -218,7 +231,7 @@ class CLIHost:
             db.execute("INSERT INTO cli_host_meta VALUES (1,?)", (self.binding,))
             self._initialization_allowed()
             db.commit()
-        return dict(status=("initialized_package" if self.config["profile"] == "managed-package-tools-v1" else
+        return dict(status=("initialized_package" if self.config["profile"] in PACKAGE_PROFILES else
                             "initialized_synthetic" if initial is None else "initialized_managed"),
                     source_revision=1, memory_revision=1)
 
@@ -230,7 +243,7 @@ class CLIHost:
                 raise DocumentError("CLI database binding unavailable")
         journal, store, saves = self._open(False)
         c = self.config
-        package = c["profile"] == "managed-package-tools-v1"
+        package = c["profile"] in PACKAGE_PROFILES
         document_tools = DocumentTools(journal, actor=c["actor"], max_input_bytes=c["max_input_bytes"], max_output_bytes=c["max_output_bytes"] - 512)
         source_tools = StorageTools(journal, store, actor=c["actor"], source_key=c["source_key"], approve_discard=self._discard,
                                     max_input_bytes=c["max_input_bytes"], max_output_bytes=c["max_output_bytes"] - 512)
@@ -243,7 +256,8 @@ class CLIHost:
             descriptor = journal.editor.descriptor_editor
             workspace = PackageWorkspace(Path(c["package_path"]), descriptor,
                                          max_files=c["package_limits"][0], max_total_bytes=c["package_limits"][1],
-                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3])
+                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3],
+                                         extensions=journal.editor.extensions)
             exporter = PackageExport(workspace, store, actor=c["actor"], source_key=c["source_key"],
                                      export_root=Path(c["export_root"]), max_generations=c["max_generations"],
                                      authorize_write=lambda: self._policy()["allow_export"])

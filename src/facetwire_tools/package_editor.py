@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 
 from .descriptor import DescriptorEditor, DocumentError, _constant, _pairs, bounded_int, encode
 from .package_workspace import PackageSnapshot, _relative
+from .extension_content import ExtensionContent
 
 
 def _drop(obj, path):
@@ -30,18 +31,22 @@ def _drop(obj, path):
 
 
 class PackageEditor:
-    def __init__(self, snapshot, descriptor_editor, *, max_bytes, max_resource_bytes):
+    def __init__(self, snapshot, descriptor_editor, *, max_bytes, max_resource_bytes, extensions=None):
         if type(snapshot) is not PackageSnapshot or type(descriptor_editor) is not DescriptorEditor:
             raise DocumentError("verified package snapshot and external descriptor editor required")
+        if ((extensions is not None and type(extensions) is not ExtensionContent)
+                or snapshot.extension_digest != ("" if extensions is None else extensions.digest)):
+            raise DocumentError("package extension validation profile changed")
         self.limits = (bounded_int(max_bytes, 1, 1048576), descriptor_editor.limits[1], descriptor_editor.limits[2])
         self.max_resource_bytes = bounded_int(max_resource_bytes, 0, 1048576)
-        self.snapshot, self.descriptor_editor = snapshot, descriptor_editor
+        self.snapshot, self.descriptor_editor, self.extensions = snapshot, descriptor_editor, extensions
         self.paths = tuple(path for path, _ in snapshot.files)
         self.resource_paths = frozenset(self.paths) - frozenset(snapshot.descriptor_paths)
         self.fixed = {path: self._fixed(self._descriptor(raw)) for path, raw in snapshot.files
                       if path in snapshot.descriptor_paths}
         self.schema_digest = hashlib.sha256(encode(dict(profile="facetwire.package-draft.v1",
-            schema=descriptor_editor.schema_digest, source=snapshot.digest, limits=list(self.limits),
+            schema=descriptor_editor.schema_digest, source=snapshot.digest, extensions=snapshot.extension_digest,
+            limits=list(self.limits),
             max_resource_bytes=self.max_resource_bytes))).hexdigest()
         self.parse(self.initial())
 
@@ -71,6 +76,10 @@ class PackageEditor:
             for obj, kind in self.descriptor_editor._objects(value):
                 if kind == "zone" and obj["content"]["type"] in ("text", "image", "animated-image", "video", "audio"):
                     self.descriptor_editor.content.validate(obj["content"])
+                elif kind == "zone" and obj["content"]["type"] not in ("placeholder", "document"):
+                    if self.extensions is None:
+                        raise DocumentError("extension Renderer content profile not installed")
+                    self.extensions.validate(obj["content"])
         except Exception:
             raise DocumentError("package descriptor validation failed") from None
         return value

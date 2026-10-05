@@ -31,6 +31,7 @@ class PackageExport:
         if (type(workspace) is not PackageWorkspace or type(store) is not DescriptorStore
                 or type(store.editor) is not PackageEditor
                 or store.editor.snapshot.digest != workspace.read().digest
+                or store.editor.snapshot.extension_digest != ("" if workspace.extensions is None else workspace.extensions.digest)
                 or store.editor.descriptor_editor.schema_digest != workspace.editor.schema_digest
                 or not root.is_absolute() or not root.is_dir() or root.is_symlink() or root.resolve() != root):
             raise DocumentError("trusted package source, saved workset and export directory required")
@@ -79,7 +80,8 @@ class PackageExport:
         package = destination / self.store.editor.snapshot.root_name
         inspected = PackageWorkspace(package, self.workspace.editor,
                                      max_files=self.workspace.limits[0], max_total_bytes=self.workspace.limits[1],
-                                     max_depth=self.workspace.limits[2], max_file_bytes=self.workspace.limits[3]).read()
+                                     max_depth=self.workspace.limits[2], max_file_bytes=self.workspace.limits[3],
+                                     extensions=self.workspace.extensions).read()
         if inspected.digest != workset_digest or inspected.root_name != self.store.editor.snapshot.root_name:
             raise DocumentError("export generation content conflict")
         expected_files = {path for path, _ in inspected.files}
