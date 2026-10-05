@@ -136,6 +136,10 @@ class CLIHost:
 
     def _policy(self):
         current = settings(self.path)
+        if current["profile"] == "managed-package-tools-v2":
+            # Profile bytes are protected host inputs, not a caller-selectable
+            # tool parameter. A changed file revokes authorization mid-call.
+            ExtensionContent.load(current["extension_schemas"])
         binding = encode({key: value for key, value in current.items()
                           if key not in POLICY_FIELDS | PACKAGE_POLICY_FIELDS})
         if binding != self.binding or not current["enabled"]:

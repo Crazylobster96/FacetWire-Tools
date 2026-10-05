@@ -132,5 +132,6 @@ class PackageCLITests(unittest.TestCase):
                            expected_source_digest=saved['digest'],expected_workset_digest=workset)
         self.assertTrue(exported['recorded'])
         profile_file.write_bytes(b'changed')
+        with self.assertRaises(DocumentError):host._policy()
         with self.assertRaises(DocumentError):CLIHost(self.fixture.path).describe()
         self.assertNotEqual(source['digest'],saved['digest'])

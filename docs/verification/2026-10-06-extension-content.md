@@ -4,4 +4,4 @@
 
 The custom `fact-card` synthetic fixture was initialized through the standalone CLI, edited, saved and exported into a separately verified new `.agscene` generation. A separate Pillow synthetic test took the same kind of content through its original approved project conversation, publication and Relay document snapshot. No production user files, model calls, remote provider or Renderer code were used. Matching an installed FacetWire visual pack to the data schema remains the trusted host's responsibility; native DLL-to-Flutter drawing is not implemented by Tools.
 
-Windows/Python 3.11 独立完整门：`tools/test-core.py --facetwire-schema-root <fixed FacetWire spec/schema>`，194/194 项通过、零跳过；15 个源码文件 1629/1629 语句、658/658 分支，逐文件 100%。Pillow 原发布交接/项目会话定向 17/17 项通过。Mac/iPhone 编译与人工视觉仍未做；本记录不把发布的数据等同于已在所有端显示。
+Windows/Python 3.11 独立完整门（含运行中 Schema 撤权复查）：`tools/test-core.py --facetwire-schema-root <fixed FacetWire spec/schema>`，194/194 项通过、零跳过；15 个源码文件 1631/1631 语句、660/660 分支，逐文件 100%。Pillow 原发布交接/项目会话定向 17/17 项通过。Mac/iPhone 编译与人工视觉仍未做；本记录不把发布的数据等同于已在所有端显示。
