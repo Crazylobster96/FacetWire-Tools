@@ -17,7 +17,8 @@ from fwtools_tests.test_package_workspace import PackageWorkspaceTests
 def schema():
     return encode(dict(type='object',required=['type','body','ink'],properties={
         'type':dict(const='fact-card'),'body':dict(type='string',maxLength=80),
-        'ink':dict(type='string',pattern=r'^#[0-9a-fA-F]{8}$')},additionalProperties=False))
+        'ink':dict(type='string',pattern=r'^#[0-9a-fA-F]{8}$'),
+        'subtitle':dict(type='string'),'footer':dict(type='string')},additionalProperties=False))
 
 
 class ExtensionContentTests(unittest.TestCase):
@@ -54,7 +55,7 @@ class ExtensionContentTests(unittest.TestCase):
 
     def test_package_inventory_and_edit_are_bound_to_installed_schema(self):
         fixture=PackageWorkspaceTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
-        custom=dict(type='fact-card',body='synthetic',ink='#112233ff')
+        custom=dict(type='fact-card',body='synthetic',ink='#112233ff',subtitle='fixed member')
         fixture.child['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']=custom
         fixture.save()
         with self.assertRaises(DocumentError):fixture.open().read()
@@ -77,6 +78,15 @@ class ExtensionContentTests(unittest.TestCase):
         self.assertEqual('#aabbccff',json.loads(base64.b64decode(changed_child['base64']))
                          ['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']['ink'])
         self.assertEqual('#112233ff',fixture.child['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']['ink'])
+        for change in ('add','drop'):
+            raw=json.loads(editor.initial())
+            entry=next(item for item in raw['files'] if item['path']==child_path)
+            descriptor=json.loads(base64.b64decode(entry['base64']))
+            content=descriptor['canvas']['pages'][0]['layers'][0]['zones'][-1]['content']
+            if change=='add':content['footer']='schema-valid but unauthorized new member'
+            else:del content['subtitle']
+            entry['base64']=base64.b64encode(encode(descriptor)).decode('ascii')
+            with self.subTest(change=change),self.assertRaises(DocumentError):editor.parse(encode(raw))
         with self.assertRaises(DocumentError):editor.prepare_patch(edited,(patch,))
         for field,expected,value in (('extension.type','fact-card','other'),('extension.missing','x','y'),
                                      ('extension.','x','y'),('extension.ink','wrong','#aabbccff'),

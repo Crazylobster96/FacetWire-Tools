@@ -95,7 +95,13 @@ class PackageEditor:
                 paths += (("content", "text"), ("content", "style", "color"),
                           ("content", "selectable"), ("content", "opacity"))
             elif kind == "zone" and self.extensions is not None and obj["content"]["type"] in self.extensions.validators:
-                paths += tuple(("content", key) for key in obj["content"] if key != "type")
+                # Values may change, but the field set is part of the imported
+                # definition. Preserve every key with a neutral value so a
+                # separately supplied raw draft cannot add/remove optional
+                # extension fields behind the patch API.
+                for key in obj["content"]:
+                    if key != "type":
+                        obj["content"][key] = None
             for path in paths:
                 _drop(obj, path)
         return encode(value)
