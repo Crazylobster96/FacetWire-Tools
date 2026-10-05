@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import facetwire_tools
 from facetwire_tools.cli import main
-from facetwire_tools.cli_host import CLIHost, DRAFT_ACTIONS, STORE_ACTIONS, parse, settings
+from facetwire_tools.cli_host import CLIHost, DRAFT_ACTIONS, STORE_ACTIONS, parse, settings, synthetic_document
 from facetwire_tools.descriptor import DocumentError, encode
 from facetwire_tools.journal import digest
 from facetwire_tools.tool_api import definitions as draft_definitions
@@ -56,6 +56,73 @@ class CLIHostTests(unittest.TestCase):
                     operations=[dict(target_id="zone", field="text", expected="Synthetic content", value="Synthetic updated")])
         args.update(changes)
         return self.call(host, "document.apply_patch", **args)
+
+    def managed(self):
+        self.config.update(profile="managed-local-tools-v1", document_id="managed-doc")
+        self.rewrite()
+        descriptor = synthetic_document()
+        descriptor["id"] = "managed-doc"
+        descriptor["title"] = "User selected source"
+        return encode(descriptor)
+
+    def test_trusted_managed_descriptor_initialize_edit_save_and_reopen(self):
+        raw = self.managed()
+        host = self.host()
+        with self.assertRaises(DocumentError):
+            host.initialize()
+        self.assertFalse(host.database.exists())
+        self.assertEqual("initialized_managed", host.initialize_document(raw)["status"])
+        self.assertEqual("managed-local-tools-v1", host.describe()["profile"])
+        self.assertEqual(raw.decode("utf-8"), self.call(host, "source.snapshot", expected_source_revision=1)["descriptor_utf8"])
+        self.assertTrue(self.edit(host)["dirty"])
+        self.call(host, "document.save", operation_id="save", expected_revision=2, expected_head=2,
+                  expected_source_revision=1)
+        reopened = self.host()
+        self.assertIn("Synthetic updated", self.call(reopened, "source.snapshot", expected_source_revision=2)["descriptor_utf8"])
+        with self.assertRaises(FileExistsError):
+            reopened.initialize_document(raw)
+
+    def test_managed_profile_and_initial_descriptor_reject_unsafe_input_before_file_creation(self):
+        raw = self.managed()
+        for changes in (dict(document_id=""), dict(document_id="wrong/id"), dict(document_id=None),
+                        dict(profile="managed-local-tools-v1", document_id="managed-doc", extra=1)):
+            self.rewrite(**changes)
+            with self.assertRaises(DocumentError):
+                settings(self.path)
+        self.rewrite()
+        host = self.host()
+        for candidate in (b"", b"x" * 65_537, b"{}", encode(synthetic_document()),
+                          raw.replace(b"managed-doc", b"other-doc"),
+                          raw.replace(b'"resources":[]', b'"resources":[{}]')):
+            with self.subTest(candidate=candidate[:25]), self.assertRaises(DocumentError):
+                host.initialize_document(candidate)
+            self.assertFalse(host.database.exists())
+        with self.assertRaises(DocumentError):
+            host._open(True)
+        with self.assertRaises(DocumentError):
+            host._open(True, encode(synthetic_document()))
+        self.rewrite(enabled=False)
+        with self.assertRaises(DocumentError):
+            self.host().initialize_document(raw)
+        self.assertFalse(host.database.exists())
+        self.rewrite()
+        self.assertEqual("initialized_managed", self.host().initialize_document(raw)["status"])
+
+    def test_cli_managed_initialization_reads_bounded_binary_stdin_and_rejects_wrong_profile(self):
+        raw = self.managed()
+        sink = io.BytesIO()
+        self.assertEqual(0, main(["--config", str(self.path), "initialize-document"],
+                                 stdin=io.BytesIO(raw), stdout=sink))
+        self.assertIn(b"initialized_managed", sink.getvalue())
+        self.assertEqual(1, main(["--config", str(self.path), "initialize-document"],
+                                 stdin=io.BytesIO(raw), stdout=io.BytesIO()))
+        self.config.pop("document_id")
+        self.config["profile"] = "synthetic-local-tools-v1"
+        self.rewrite()
+        with self.assertRaises(DocumentError):
+            self.host().initialize_document(raw)
+        self.assertEqual(1, main(["--config", str(self.path), "initialize-document"],
+                                 stdin=io.BytesIO(raw), stdout=io.BytesIO()))
 
     def test_independent_fifteen_tools_full_edit_save_reopen_reload_history_flow(self):
         host = self.initialized()

@@ -123,6 +123,13 @@ class DescriptorEditor:
         except Exception:
             raise DocumentError("invalid patch operations") from None
         value = self.parse(raw)
+        self._apply_ops(value, ops)
+        result = encode(value)
+        self.parse(result)
+        return result
+
+    def _apply_ops(self, value, ops):
+        """Apply the same bounded field capability to a verified package descriptor."""
         objects = {obj["id"]: (obj, kind) for obj, kind in self._objects(value)}
         for operation in ops:
             if type(operation) is not dict or set(operation) != {"target_id", "field", "expected", "value"}:
@@ -148,6 +155,3 @@ class DescriptorEditor:
             if encode(existing) != encode(operation["expected"]):
                 raise DocumentError("patch precondition conflict")
             parent[path[-1]] = operation["value"]
-        result = encode(value)
-        self.parse(result)
-        return result

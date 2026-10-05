@@ -60,6 +60,30 @@ class ToolApiTests(unittest.TestCase):
         self.assertTrue(self.call("reconcile", operation_id="redo")["recorded"])
         self.assertFalse(self.call("reconcile", operation_id="unknown")["recorded"])
 
+    def test_opt_in_preview_returns_exact_uncommitted_candidate_with_current_head(self):
+        operations = self.fixture.command()["payload"]
+        candidate = self.call("preview_patch", expected_revision=1, expected_head=1,
+                              operations=operations, include_candidate=True)
+        self.assertFalse(candidate["persisted"])
+        self.assertEqual(candidate["candidate"]["document_digest"],
+                         __import__("hashlib").sha256(candidate["candidate_utf8"].encode("utf-8")).hexdigest())
+        self.assertEqual("changed", json.loads(candidate["candidate_utf8"])["canvas"]["pages"][0]
+                         ["layers"][0]["zones"][0]["content"]["text"])
+        self.assertNotIn("changed", self.call("snapshot", expected_revision=1)["descriptor_utf8"])
+        with self.assertRaises(DocumentError):
+            self.call("preview_patch", expected_revision=1, expected_head=2,
+                      operations=operations, include_candidate=True)
+        with self.assertRaises(DocumentError):
+            self.call("preview_patch", expected_revision=1, expected_head=1,
+                      operations=operations, include_candidate="true")
+        small = DocumentTools(self.journal, actor="actor", max_input_bytes=65536, max_output_bytes=4096)
+        large = self.fixture.command()["payload"]
+        large[0]["value"] = "x" * 5000
+        with self.assertRaises(DocumentError):
+            small.call("facetwire.document.preview_patch", {"session_id": small.session_id,
+                "expected_revision": 1, "expected_head": 1, "operations": large, "include_candidate": True})
+        self.assertEqual([], self.call("history", after_revision=0, limit=128)["entries"])
+
     def test_host_actor_not_overridable_scope_permissions_and_new_handle_on_reopen(self):
         old_session = self.tools.session_id
         reopened = DocumentTools(self.fixture.journal(), actor="actor", max_input_bytes=65536, max_output_bytes=65536)

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit synthetic-only local console entry point; binary streams use UTF-8 JSON."""
+"""Explicit local console entry point; binary streams use UTF-8 JSON."""
 import argparse
 import sys
 
@@ -8,9 +8,9 @@ from .descriptor import encode
 
 
 def main(argv=None, *, stdin=None, stdout=None):
-    parser = argparse.ArgumentParser(description="FacetWire Tools synthetic local host (no network/model)")
+    parser = argparse.ArgumentParser(description="FacetWire Tools trusted local host (no network/model)")
     parser.add_argument("--config", required=True, help="absolute trusted host configuration path, not an Agent argument")
-    parser.add_argument("action", choices=("initialize-synthetic", "describe", "call"))
+    parser.add_argument("action", choices=("initialize-synthetic", "initialize-document", "initialize-package", "describe", "call"))
     args = parser.parse_args(argv)
     source = sys.stdin.buffer if stdin is None else stdin
     sink = sys.stdout.buffer if stdout is None else stdout
@@ -18,6 +18,10 @@ def main(argv=None, *, stdin=None, stdout=None):
         host = CLIHost(args.config)
         if args.action == "initialize-synthetic":
             response = host.initialize()
+        elif args.action == "initialize-document":
+            response = host.initialize_document(source.read(host.config["editor_limits"][0] + 1))
+        elif args.action == "initialize-package":
+            response = host.initialize_package()
         elif args.action == "describe":
             response = host.describe()
         else:

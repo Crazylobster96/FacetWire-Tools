@@ -7,18 +7,21 @@ from jsonschema import Draft202012Validator
 
 from .descriptor import DocumentError, bounded_int, encode
 from .journal import DraftJournal, identity
+from .package_editor import PackageEditor
 from .storage import DescriptorStore
 
 
-def definitions():
+def definitions(*, package=False):
     identity_schema = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", "maxLength": 128}
     version = {"type": "integer", "minimum": 1, "maximum": 128}
     draft_version = {"type": "integer", "minimum": 1, "maximum": 129}
+    source = "facetwire.package_source." if package else "facetwire.source."
+    document = "facetwire.package." if package else "facetwire.document."
     inputs = {
-        "facetwire.source.inspect": {"expected_source_revision": version},
-        "facetwire.source.snapshot": {"expected_source_revision": version},
-        "facetwire.source.reconcile": {"operation_id": identity_schema},
-        "facetwire.document.reload": {
+        source + "inspect": {"expected_source_revision": version},
+        source + "snapshot": {"expected_source_revision": version},
+        source + "reconcile": {"operation_id": identity_schema},
+        document + "reload": {
             "expected_source_revision": version, "expected_revision": draft_version, "expected_head": draft_version,
             "operation_id": identity_schema, "dirty_policy": {"enum": ["reject", "discard"]},
             "approval_id": {"anyOf": [identity_schema, {"type": "null"}]}},
@@ -27,7 +30,7 @@ def definitions():
     for name, properties in inputs.items():
         properties = {"session_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{32}$", "minLength": 32, "maxLength": 32}, **properties}
         result.append(dict(name=name, version="0.1", source_save=False,
-                           effect="durable_draft_reload" if name == "facetwire.document.reload" else "read_only",
+                           effect="durable_draft_reload" if name == document + "reload" else "read_only",
                            cancel="before_dispatch_only", recovery="reconcile_operation_id",
                            parameters=dict(type="object", additionalProperties=False, required=list(properties), properties=properties)))
     return result
@@ -42,11 +45,13 @@ class StorageTools:
             raise DocumentError("draft/store descriptor profile mismatch")
         self.journal, self.store = journal, store
         self.actor, self.source_key = identity(actor), identity(source_key)
+        self.package = type(journal.editor) is PackageEditor
         self.approve_discard = approve_discard
         self.limits = (bounded_int(max_input_bytes, 1, 1_048_576), bounded_int(max_output_bytes, 4096, 4_194_304))
         self._access("attach")
         self.session_id = secrets.token_urlsafe(24)
-        self.schemas = {item["name"]: Draft202012Validator(item["parameters"]) for item in definitions()}
+        self.schemas = {item["name"]: Draft202012Validator(item["parameters"])
+                        for item in definitions(package=self.package)}
 
     def _access(self, action):
         self.journal._access(self.actor, action)

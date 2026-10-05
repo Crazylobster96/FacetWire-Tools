@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Host-configured synthetic local CLI adapter; never a network authorization API."""
+"""Host-configured local CLI adapter; never a network authorization API."""
 from contextlib import closing
 import json
 from pathlib import Path
@@ -12,12 +12,17 @@ from .managed_save import ManagedSaves
 from .tool_api import DocumentTools, definitions as draft_definitions
 from .storage_tools import StorageTools, definitions as source_definitions
 from .managed_tools import ManagedSaveTools, definitions as save_definitions
+from .package_workspace import PackageWorkspace
+from .package_editor import PackageEditor
+from .package_export import PackageExport
+from .package_export_tools import PackageExportTools, definitions as export_definitions
 
 
-DRAFT_ACTIONS = frozenset(("open", "attach", "inspect", "validate", "snapshot", "preview_patch", "patch", "undo", "redo",
+DRAFT_ACTIONS = frozenset(("open", "attach", "inspect", "validate", "snapshot", "targets", "preview_patch", "patch", "undo", "redo",
                            "history", "reconcile", "reload", "savepoint", "save", "save_reconcile"))
 STORE_ACTIONS = frozenset(("open", "read", "read_candidate", "candidate", "managed_local"))
 POLICY_FIELDS = frozenset(("enabled", "allow_initialize", "draft_actions", "store_actions", "discard_approvals"))
+PACKAGE_POLICY_FIELDS = frozenset(("allow_export",))
 
 
 def parse(raw, maximum):
@@ -35,11 +40,21 @@ def settings(path):
         value = parse(stream.read(32_769), 32_768)
     keys = {"profile", "database_path", "schema_root", "actor", "draft_scope", "store_scope", "source_key",
             "editor_limits", "draft_limits", "store_limits", "save_limits", "max_input_bytes", "max_output_bytes"} | POLICY_FIELDS
-    if type(value) is not dict or set(value) != keys or value["profile"] != "synthetic-local-tools-v1":
-        raise DocumentError("explicit synthetic CLI host configuration required")
+    if type(value) is not dict or value.get("profile") not in (
+            "synthetic-local-tools-v1", "managed-local-tools-v1", "managed-package-tools-v1"):
+        raise DocumentError("explicit supported CLI host profile required")
+    package = value["profile"] == "managed-package-tools-v1"
+    if value["profile"] in ("managed-local-tools-v1", "managed-package-tools-v1"):
+        keys.add("document_id")
+    if package:
+        keys.update({"package_path", "export_root", "package_limits", "max_resource_bytes", "max_generations", "allow_export"})
+    if set(value) != keys:
+        raise DocumentError("exact CLI host configuration required")
+    if value["profile"] in ("managed-local-tools-v1", "managed-package-tools-v1"):
+        identity(value["document_id"])
     for field in ("actor", "draft_scope", "store_scope", "source_key"):
         identity(value[field])
-    for field in ("database_path", "schema_root"):
+    for field in (("database_path", "schema_root", "package_path", "export_root") if package else ("database_path", "schema_root")):
         if (type(value[field]) is not str or "\x00" in value[field] or
                 not Path(value[field]).is_absolute() or Path(value[field]).is_symlink()):
             raise DocumentError("trusted absolute host paths required")
@@ -52,6 +67,16 @@ def settings(path):
             raise DocumentError("explicit host limits required")
         for item, (minimum, maximum) in zip(values, ranges):
             bounded_int(item, minimum, maximum)
+    if package:
+        package_limits=value["package_limits"]
+        if type(package_limits) is not list or len(package_limits) != 4:
+            raise DocumentError("explicit package limits required")
+        for item,(minimum,maximum) in zip(package_limits,((1,4096),(1,67_108_864),(0,16),(1,67_108_864))):
+            bounded_int(item,minimum,maximum)
+        bounded_int(value["max_resource_bytes"],0,1_048_576)
+        bounded_int(value["max_generations"],1,128)
+        if type(value["allow_export"]) is not bool:
+            raise DocumentError("explicit package export authorization required")
     bounded_int(value["max_input_bytes"], 1, 65_536)
     bounded_int(value["max_output_bytes"], 8192, 4_194_304)
     for field in ("enabled", "allow_initialize"):
@@ -94,12 +119,14 @@ class CLIHost:
         if not self.path.is_absolute() or self.path.is_symlink():
             raise DocumentError("trusted absolute CLI config path required")
         self.config = settings(self.path)
-        self.binding = encode({key: value for key, value in self.config.items() if key not in POLICY_FIELDS})
+        self.binding = encode({key: value for key, value in self.config.items()
+                               if key not in POLICY_FIELDS | PACKAGE_POLICY_FIELDS})
         self.database = Path(self.config["database_path"])
 
     def _policy(self):
         current = settings(self.path)
-        binding = encode({key: value for key, value in current.items() if key not in POLICY_FIELDS})
+        binding = encode({key: value for key, value in current.items()
+                          if key not in POLICY_FIELDS | PACKAGE_POLICY_FIELDS})
         if binding != self.binding or not current["enabled"]:
             raise DocumentError("host disabled or immutable configuration changed")
         return current
@@ -117,40 +144,83 @@ class CLIHost:
         approval = dict(approval_id=command["payload"]["approval_id"], command_digest=digest(raw), scope_digest=digest(encode(scope)))
         return approval in policy["discard_approvals"]
 
-    def _open(self, create):
+    def _open(self, create, initial=None):
         c = self.config
-        editor = DescriptorEditor(Path(c["schema_root"]), max_bytes=c["editor_limits"][0],
-                                  max_nodes=c["editor_limits"][1], max_depth=c["editor_limits"][2])
+        descriptor = DescriptorEditor(Path(c["schema_root"]), max_bytes=c["editor_limits"][0],
+                                      max_nodes=c["editor_limits"][1], max_depth=c["editor_limits"][2])
+        if c["profile"] == "managed-package-tools-v1":
+            workspace = PackageWorkspace(Path(c["package_path"]), descriptor,
+                                         max_files=c["package_limits"][0], max_total_bytes=c["package_limits"][1],
+                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3])
+            snapshot = workspace.read()
+            root = parse(dict(snapshot.files)[snapshot.root_name + ".dis.json"], c["editor_limits"][0])
+            if root["id"] != c["document_id"]:
+                raise DocumentError("trusted package descriptor ID mismatch")
+            editor = PackageEditor(snapshot, descriptor, max_bytes=c["editor_limits"][0],
+                                   max_resource_bytes=c["max_resource_bytes"])
+            seed = editor.initial() if create else None
+        else:
+            editor = descriptor
+            seed = (encode(synthetic_document()) if c["profile"] == "synthetic-local-tools-v1" else initial) if create else None
+            if create and (type(seed) is not bytes or editor.parse(seed)["id"] != c.get("document_id", "synthetic-doc")):
+                raise DocumentError("exact validated initial descriptor required")
         journal = DraftJournal(self.database, editor, scope=c["draft_scope"], actor=c["actor"], authorize=self._authorize,
                                max_events=c["draft_limits"][0], max_total_bytes=c["draft_limits"][1], create=create,
-                               initial=encode(synthetic_document()) if create else None)
+                               initial=seed)
         store = DescriptorStore(self.database, editor, scope=c["store_scope"], actor=c["actor"],
                                 authorize=lambda scope: self._authorize(scope, True),
                                 max_events=c["store_limits"][0], max_total_bytes=c["store_limits"][1], create=create)
         if create:
-            store.save(encode(synthetic_document()), actor=c["actor"], source_key=c["source_key"], expected_revision=0,
-                        operation_id="synthetic-initial", mode="managed_local")
+            store.save(seed, actor=c["actor"], source_key=c["source_key"], expected_revision=0,
+                        operation_id=("synthetic-initial" if c["profile"] == "synthetic-local-tools-v1" else
+                                      "package-initial" if c["profile"] == "managed-package-tools-v1" else "managed-initial"),
+                        mode="managed_local")
         saves = ManagedSaves(journal, store, actor=c["actor"], source_key=c["source_key"],
                              max_saves=c["save_limits"][0], max_total_bytes=c["save_limits"][1], create=create)
         return journal, store, saves
 
     def _initialization_allowed(self):
         if not self._policy()["allow_initialize"]:
-            raise DocumentError("synthetic initialization not explicitly allowed")
+            raise DocumentError("host initialization not explicitly allowed")
 
     def initialize(self):
         self._initialization_allowed()
+        if self.config["profile"] != "synthetic-local-tools-v1":
+            raise DocumentError("synthetic initialization requires its exact profile")
+        return self._initialize()
+
+    def initialize_document(self, raw):
+        self._initialization_allowed()
+        if self.config["profile"] != "managed-local-tools-v1":
+            raise DocumentError("managed initialization requires its exact profile")
+        value = parse(raw, self.config["editor_limits"][0])
+        editor = DescriptorEditor(Path(self.config["schema_root"]), max_bytes=self.config["editor_limits"][0],
+                                  max_nodes=self.config["editor_limits"][1], max_depth=self.config["editor_limits"][2])
+        editor.parse(raw)
+        if value["id"] != self.config["document_id"]:
+            raise DocumentError("trusted initial descriptor ID mismatch")
+        return self._initialize(raw)
+
+    def initialize_package(self):
+        self._initialization_allowed()
+        if self.config["profile"] != "managed-package-tools-v1":
+            raise DocumentError("package initialization requires its exact profile")
+        return self._initialize()
+
+    def _initialize(self, initial=None):
         # Exclusive create never overwrites an existing file, even a zero-byte one.
         with self.database.open("xb"):
             pass
-        journal, _, _ = self._open(True)
+        journal, _, _ = self._open(True) if initial is None else self._open(True, initial)
         with closing(journal._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("CREATE TABLE cli_host_meta (id INTEGER PRIMARY KEY CHECK(id=1), binding BLOB NOT NULL)")
             db.execute("INSERT INTO cli_host_meta VALUES (1,?)", (self.binding,))
             self._initialization_allowed()
             db.commit()
-        return dict(status="initialized_synthetic", source_revision=1, memory_revision=1)
+        return dict(status=("initialized_package" if self.config["profile"] == "managed-package-tools-v1" else
+                            "initialized_synthetic" if initial is None else "initialized_managed"),
+                    source_revision=1, memory_revision=1)
 
     def attach(self):
         self._policy()
@@ -160,12 +230,27 @@ class CLIHost:
                 raise DocumentError("CLI database binding unavailable")
         journal, store, saves = self._open(False)
         c = self.config
+        package = c["profile"] == "managed-package-tools-v1"
         document_tools = DocumentTools(journal, actor=c["actor"], max_input_bytes=c["max_input_bytes"], max_output_bytes=c["max_output_bytes"] - 512)
         source_tools = StorageTools(journal, store, actor=c["actor"], source_key=c["source_key"], approve_discard=self._discard,
                                     max_input_bytes=c["max_input_bytes"], max_output_bytes=c["max_output_bytes"] - 512)
         save_tools = ManagedSaveTools(saves, max_input_bytes=c["max_input_bytes"])
         self.routes, self.definitions = {}, []
-        for group, items in ((document_tools, draft_definitions()), (source_tools, source_definitions()), (save_tools, save_definitions())):
+        groups = [(document_tools, draft_definitions(package=package)),
+                  (source_tools, source_definitions(package=package)),
+                  (save_tools, save_definitions(package=package))]
+        if package:
+            descriptor = journal.editor.descriptor_editor
+            workspace = PackageWorkspace(Path(c["package_path"]), descriptor,
+                                         max_files=c["package_limits"][0], max_total_bytes=c["package_limits"][1],
+                                         max_depth=c["package_limits"][2], max_file_bytes=c["package_limits"][3])
+            exporter = PackageExport(workspace, store, actor=c["actor"], source_key=c["source_key"],
+                                     export_root=Path(c["export_root"]), max_generations=c["max_generations"],
+                                     authorize_write=lambda: self._policy()["allow_export"])
+            visible=[item for item in export_definitions() if self._policy()["allow_export"] or
+                     item["name"] == "facetwire.package.export_reconcile"]
+            groups.append((PackageExportTools(exporter,max_input_bytes=c["max_input_bytes"]),visible))
+        for group, items in groups:
             for item in items:
                 self.routes[item["name"]] = group
                 item["parameters"]["properties"].pop("session_id")
@@ -174,7 +259,7 @@ class CLIHost:
 
     def describe(self):
         self.attach()
-        result = dict(status="ok", profile="synthetic-local-tools-v1", tools=self.definitions)
+        result = dict(status="ok", profile=self.config["profile"], tools=self.definitions)
         if len(encode(result)) > self.config["max_output_bytes"]:
             raise DocumentError("CLI description exceeds output budget")
         return result

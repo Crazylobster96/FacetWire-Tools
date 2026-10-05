@@ -8,6 +8,7 @@ import re
 import sqlite3
 
 from .descriptor import DescriptorEditor, DocumentError, bounded_int, encode
+from .package_editor import PackageEditor
 
 
 def identity(value):
@@ -26,7 +27,7 @@ class DraftJournal:
         self.path = Path(path)
         if not self.path.is_absolute() or self.path.is_symlink():
             raise DocumentError("trusted absolute journal path required")
-        if type(editor) is not DescriptorEditor or type(create) is not bool or not callable(authorize):
+        if type(editor) not in (DescriptorEditor, PackageEditor) or type(create) is not bool or not callable(authorize):
             raise DocumentError("exact editor and explicit journal configuration required")
         self.editor, self.scope, self.authorize = editor, identity(scope), authorize
         self.limits = (bounded_int(max_events, 1, 128), bounded_int(max_total_bytes, 1, 67108864))
