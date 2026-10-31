@@ -1,7 +1,7 @@
 name: Independent core verification
+# Manual only: all verification runs locally before pushing (user decision
+# 2026-10-24); this account's Actions cannot start jobs.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
